@@ -1,5 +1,12 @@
 # Tiny386
 
+> **Fork note.** This fork additionally targets the i386 emulator at a
+> **VexRiscv soft core on a Lattice ECP5 FPGA**, as the CPU for a PC
+> motherboard project — running slowly but observably, in both simulation
+> and hardware, with guest memory in FPGA external memory behind an
+> L2/L3 cache and coherency block. Upstream behaviour as a host
+> application is unchanged. See **[FPGA-SOFTCORE.md](FPGA-SOFTCORE.md)**.
+
 ## Introduction
 Tiny386 is a x86 PC emulator written in C99. The highlight of the project is its portability. It now boots Windows 9x/NT on MCU such as ESP32-S3.
 
