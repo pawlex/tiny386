@@ -15,7 +15,12 @@
 #ifndef __wasm__
 #define I386_OPT2
 #endif
+/* x87 is opt-out: -DI386_DISABLE_FPU drops it, which avoids pulling in
+ * soft-float on targets without an FPU (the integer core itself uses no
+ * floating point at all). Stubs for the disabled case are below. */
+#ifndef I386_DISABLE_FPU
 #define I386_ENABLE_FPU
+#endif
 
 #ifdef I386_ENABLE_FPU
 #include "fpu.h"
@@ -3709,6 +3714,26 @@ static bool verrw_helper(CPUI386 *cpu, int sel, int wr, int *zf)
 		break; \
 	}
 
+#if defined(__riscv) && __riscv_xlen == 32
+/* Bare-metal RV32: no clock_gettime. Read the 64-bit cycle counter via
+ * rdcycle/rdcycleh. This feeds the emulated RDTSC, and counting CPU
+ * cycles is closer to real x86 TSC semantics than the host build's
+ * nanoseconds. The retry loop guards the hi/lo read against a carry
+ * between the two halves.
+ *
+ * Note: the `cycle` CSR is optional in RISC-V implementations; a
+ * VexRiscv build must enable it or this reads as zero/traps. */
+static uint64_t get_nticks(void)
+{
+	uint32_t hi, lo, hi2;
+	do {
+		__asm__ volatile ("rdcycleh %0" : "=r"(hi));
+		__asm__ volatile ("rdcycle  %0" : "=r"(lo));
+		__asm__ volatile ("rdcycleh %0" : "=r"(hi2));
+	} while (hi != hi2);
+	return ((uint64_t)hi << 32) | lo;
+}
+#else
 #include <time.h>
 static uint64_t get_nticks()
 {
@@ -3717,6 +3742,7 @@ static uint64_t get_nticks()
     return ((uint64_t) ts.tv_sec * 1000000000ull +
 	    (uint64_t) ts.tv_nsec);
 }
+#endif
 
 #define RDTSC() \
 	uint64_t tsc = get_nticks(); \
@@ -5117,7 +5143,13 @@ long IRAM_ATTR cpui386_get_cycle(CPUI386 *cpu)
 
 CPUI386 *cpui386_new(int gen, char *phys_mem, long phys_mem_size, CPU_CB **cb)
 {
+#if defined(TINY386_STATIC_ALLOC)
+	/* Bare-metal: no heap. Single CPU instance, statically allocated. */
+	static CPUI386 cpu_storage;
+	CPUI386 *cpu = &cpu_storage;
+#else
 	CPUI386 *cpu = malloc(sizeof(CPUI386));
+#endif
 	switch (gen) {
 	case 3: cpu->flags_mask = EFLAGS_MASK_386; break;
 	case 4: cpu->flags_mask = EFLAGS_MASK_486; break;
@@ -5126,7 +5158,12 @@ CPUI386 *cpui386_new(int gen, char *phys_mem, long phys_mem_size, CPU_CB **cb)
 	}
 
 	cpu->tlb.size = tlb_size;
+#if defined(TINY386_STATIC_ALLOC)
+	static struct tlb_entry tlb_storage[tlb_size];
+	cpu->tlb.tab = tlb_storage;
+#else
 	cpu->tlb.tab = malloc(sizeof(struct tlb_entry) * tlb_size);
+#endif
 
 	cpu->phys_mem = (u8 *) phys_mem;
 	cpu->phys_mem_size = phys_mem_size;
