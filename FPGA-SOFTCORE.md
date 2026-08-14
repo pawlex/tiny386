@@ -122,6 +122,14 @@ immediately, before any FPGA work:
 Keeping both paths building from one source is a design constraint, not
 an accident: divergence between them destroys the value of the first.
 
+## Port analysis
+
+Measured footprint, the exact changes required, and the first milestone
+are in **[PORT-ANALYSIS.md](PORT-ANALYSIS.md)**. Summary: the integer
+core is ~140 KB of text and ~13 KB of working state, has zero floating
+point, and its entire libc surface is 14 `assert`, 2 `malloc`,
+2 `fprintf` and 2 `abort`.
+
 ## Known risks
 
 - **Interrupt latency** will be poor if the interpreter polls. Hardware
