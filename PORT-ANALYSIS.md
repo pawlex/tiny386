@@ -24,9 +24,11 @@ void     cpui386_raise_irq(CPUI386 *cpu);
 
 **Physical memory is a flat buffer pointer, not a callback.** Guest RAM
 access is therefore a plain load/store from the emulator's point of view,
-which on VexRiscv goes through its cache hierarchy natively — no
-per-access callback overhead on the hot path. `phys_mem` points at the
-external DRAM window in the RISC-V address map.
+with no per-access callback overhead in the emulator itself. Where
+`phys_mem` points, and what services those loads and stores, is a
+property of the MCU address map and the memory subsystem — **not decided
+here** (see FPGA-SOFTCORE.md). The architecture decision is that such
+accesses leave the MCU through the 486 BIU.
 
 Only the rare paths are callbacks, and those are precisely the ones that
 should reach real hardware:
@@ -69,14 +71,15 @@ is ~125 KB code and ~12 KB writable state** (TLB 12,288 B + `CPUI386`
 512 B + libc). picolibc and the semihosting layer cost only ~5.5 KB on
 top of the core, because so little of it is used.
 
-Guest RAM is external DRAM and outside this budget — the single biggest
-departure from the ESP32 build, which carries the whole PC.
+Guest RAM lives outside the MCU and is not part of this budget — the
+single biggest departure from the ESP32 build, which carries the whole
+PC in its own address space.
 
 At ~125 KB the code is ~27% of the ECP5-85F's block RAM (3.7 Mbit ≈
 460 KB), and **the architecture decision is that MCU code and data live
 in local BRAM** — see FPGA-SOFTCORE.md. Everything outside that region
 leaves the MCU as 486 bus cycles. ~137 KB total (code + writable state)
-leaves roughly 70% of BRAM for L2 tags/data, video buffers and FIFOs.
+leaves roughly 70% of the device's BRAM for everything else.
 
 Note `rv32imc` is 25% smaller than `rv32im` — but see the variant
 section: compressed instructions cost 40% of the clock on ECP5, so
@@ -175,7 +178,7 @@ Smaller code improves I-cache hit rate, but it would have to be worth
 ### Recommendation
 
 > **Superseded premise.** The comparison below assumed the interpreter
-> runs from external DRAM and therefore needs caches. The architecture
+> runs from external memory and therefore needs caches. The architecture
 > decision is now BRAM-resident MCU code/data with an *uncached* guest
 > region reached over the 486 BIU, which weakens that reasoning
 > considerably. The measurements stand; the recommendation should be
@@ -194,11 +197,10 @@ core.
 
 Ruled out:
 
-- **`Min`/`MinDebug`** — no cache and no mul/div. An interpreter fetching
-  from DRAM uncached would be crippled, and the emulator uses multiply.
-- **`Lite`** — I-cache but a *simple* D-bus, so every guest memory access
-  goes uncached to DRAM. That is precisely the failure mode called out in
-  FPGA-SOFTCORE.md.
+- **`Min`/`MinDebug`** — no mul/div, which the emulator uses. This holds
+  regardless of the memory architecture.
+- **`Lite`** — no mul/div either. Its cacheless D-bus mattered under the
+  superseded premise; the mul/div gap rules it out either way.
 - **`Linux`** — the MMU buys nothing; tiny386 maintains its own TLB in
   software (the 12 KB table above). Costs 30% more LUT4 and 23% of the
   clock versus `Full`.
@@ -222,8 +224,8 @@ already present.
 - **Interrupt latency.** `cpui386_raise_irq` plus `pic_read_irq` implies
   the interpreter notices interrupts at its own cadence. Acceptable
   latency against real hardware peripherals is unquantified.
-- **`phys_mem` window size and placement** in the RISC-V address map, and
-  how MMIO regions are carved out of it.
+- **`phys_mem` placement and guest RAM sizing** — deferred with the
+  memory subsystem, not blocking the core port.
 - **Cache configuration** for the VexRiscv build — the measured
   Lite/Debug configs are cacheless and would be a poor fit; a
   cache-carrying build is estimated at 5–8k LUT4 but has not been

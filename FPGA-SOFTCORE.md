@@ -13,9 +13,9 @@ application. Measured footprint and the port itself are in
 
 The project is a PC motherboard whose primary sockets take a real 386SX
 or 486DX. tiny386 runs as a software payload on a **VexRiscv MCU** inside
-a **Lattice ECP5** FPGA, and exists to exercise the chipset, the cache
-and coherency block, and the 486 bus interface — **in Verilator, where
-every signal is observable.** On real hardware it would not be.
+a **Lattice ECP5** FPGA, and exists to exercise the 486 bus interface and
+everything behind it — **in Verilator, where every signal is
+observable.** On real hardware it would not be.
 
 It is explicitly *not* a product CPU option, and it is not judged on
 being a pleasant machine to use. It is judged on whether it drives the
@@ -74,11 +74,19 @@ bridge.
 ```
   VexRiscv MCU
       |
-      |-- local: BRAM code + data ............ stays inside, fast
+      |-- local: BRAM code + data ....... stays inside
       |
-      `-- everything else --> 486 BIU --> [L2/L3 + coherency] --> DRAM
-                                              `--> peripheral decode (RTL)
+      `-- everything else --> 486 BIU ==>| MEMORY SUBSYSTEM   |
+                                         | *** UNDEFINED ***  |
+                                         |                    |
+                                         | peripheral decode  |
+                                         | (RTL, register-    |
+                                         |  compatible)       |
 ```
+
+Everything to the right of the BIU is **out of scope for this document
+and deliberately undefined** — see "The memory subsystem is undefined"
+below.
 
 The split is **by memory region**, not by access type. Simpler to
 implement, simpler to reason about, and the emulator does not have to
@@ -87,9 +95,8 @@ classify accesses at all.
 ### Why
 
 Observability is the entire reason for a soft CPU. Routing external
-access through the BIU means **the chipset, the cache/coherency block and
-the BIU itself are all exercised in Verilator**, with every signal
-visible. Bypassing it to save cycles would trade away the thing that
+access through the BIU means **the BIU and everything behind it are
+exercised in Verilator**, with every signal visible. Bypassing it to save cycles would trade away the thing that
 cannot be recovered on hardware for a thing that has been declared not to
 matter.
 
@@ -97,30 +104,59 @@ It also guarantees the test payload and the emulator payload exercise the
 *same* path — otherwise the tester validates something the emulator never
 uses.
 
-The topology is faithful: a real 486 talks to L2 over its local bus, and
-L2 talks to DRAM. Guest RAM going out as bus cycles is what a 486 does,
-and the cache is supposed to absorb them.
+It is also faithful to what a real 486 does: guest RAM access leaves the
+CPU as bus cycles. What services those cycles on the far side is the
+memory subsystem's business, not the emulator's.
 
 ### Implication: the guest region should be uncached in the MCU
 
-Following from the above, and worth stating explicitly. If the VexRiscv
-D-caches guest memory, a second cache layer sits above the chipset's L2 —
-with its own coherency relationship to the coherency block, absorbing
-exactly the traffic the BIU exists to expose. Marking the guest region
-uncached keeps **one cache hierarchy, fully exercised**, and avoids a
-two-cache coherency puzzle.
+Following from the above. A cache *inside the MCU* would absorb guest
+traffic **before it reaches the BIU** — hiding exactly what the BIU
+exists to expose, and doing so invisibly. Whatever caching the system
+has belongs on the far side of the boundary, where it is observable.
+
+Note this reasoning does not depend on what the memory subsystem looks
+like: it holds whether or not there is a cache out there, because the
+argument is about where traffic becomes visible.
 
 Knock-on: with MCU code/data in BRAM and guest accesses deliberately
 uncached, **the MCU's own caches matter far less** than the variant
 analysis in PORT-ANALYSIS.md assumed — that recommendation was built on
-"the interpreter runs from DRAM and needs caches." Worth re-measuring
-against the real configuration rather than carrying it forward.
+"the interpreter runs from external memory and needs caches." Worth
+re-deriving rather than carrying forward.
 
 ### Accepted cost
 
-Every guest memory access becomes a BIU transaction, including L2 hits,
-which cost the bus handshake. This is a deliberate trade, not an
-oversight.
+Every guest memory access becomes a BIU transaction and pays the bus
+handshake, regardless of what services it on the far side. A deliberate
+trade, not an oversight.
+
+## The memory subsystem is undefined
+
+**Treated as undefined, deliberately, and nothing here should assume a
+design for it.** It is being specified last, on purpose.
+
+What *is* defined is the **contract at the BIU boundary**: native 486
+local-bus cycles in, whatever the subsystem chooses out. That constrains
+what the subsystem must accept, not how it works. Ways, coherency
+protocol, fill and evict policy, hierarchy depth, DRAM scheduling,
+address mapping — all open.
+
+Not assumed by anything above:
+
+- that a cache exists at all, or how many levels
+- any particular coherency scheme
+- where DRAM sits, or that DRAM is the backing store
+- any latency, hit rate or bandwidth figure
+- that the MCU can address guest memory directly rather than only
+  through the BIU
+
+**Convention:** if a design decision anywhere expects a particular
+memory-subsystem design, flow or path, it gets flagged and hashed out
+rather than assumed. Statements about the *MCU side* of the boundary
+(BRAM-resident payload, uncached guest region) are not
+memory-subsystem assumptions — they describe what the MCU does before
+the BIU.
 
 ## BIOS and peripherals
 
