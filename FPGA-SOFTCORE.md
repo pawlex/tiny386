@@ -1,28 +1,33 @@
-# tiny386 as an FPGA soft CPU — design notes
+# tiny386 as an FPGA payload — design notes
 
 Fork-specific notes. Upstream tiny386 is a portable PC emulator; see
 [`README.md`](README.md) for what it is and how to build it normally.
 This document records why *this* fork exists and how it is intended to be
-used, and nothing here changes the emulator's behaviour as a host
-application.
+used. Nothing here changes the emulator's behaviour as a host
+application. Measured footprint and the port itself are in
+[PORT-ANALYSIS.md](PORT-ANALYSIS.md).
 
-> **Blocked:** how the emulator reaches the chipset is **not decided** —
-> see [OPEN DECISION](#open-decision--settle-before-any-integration-work).
-> The CPU-core port is unaffected and can proceed; integration work
-> should not.
+## What this is for
 
-## Design goal
+**A validation and enabling vehicle. Nothing more.**
 
-**A small x86 core that runs both in simulation and on hardware, slowly.**
+The project is a PC motherboard whose primary sockets take a real 386SX
+or 486DX. tiny386 runs as a software payload on a **VexRiscv MCU** inside
+a **Lattice ECP5** FPGA, and exists to exercise the chipset, the cache
+and coherency block, and the 486 bus interface — **in Verilator, where
+every signal is observable.** On real hardware it would not be.
 
-tiny386's i386 emulator is retargeted to run on a **VexRiscv** soft core
-inside a **Lattice ECP5** FPGA, part of a PC motherboard project whose
-primary sockets take a real 386SX or 486DX. The soft-CPU path exists for
-the configuration where no hard CPU is fitted, and for board bring-up and
-chipset validation.
+It is explicitly *not* a product CPU option, and it is not judged on
+being a pleasant machine to use. It is judged on whether it drives the
+hardware faithfully and observably.
 
-Speed is explicitly not a goal. Correct, observable, debuggable
-behaviour is.
+Consequences of that framing:
+
+- **Performance is not a design input.** It matters only where it makes
+  iteration painful (see the simulation-depth note below).
+- **Realistic access patterns are the point.** A synthetic bus exerciser
+  could poke the chipset, but only a real x86 workload produces the
+  traffic a real CPU will produce.
 
 ### tiny386 is a payload, not the architecture
 
@@ -32,226 +37,175 @@ for the 486 BIU interface bridge, which is independent RTL that payloads
 talk *through* rather than implement.
 
 Other payloads are equally valid on the same core: chipset test and
-validation code, diagnostics, bootloaders, anything that fits the memory
+validation code, diagnostics, bootloaders — anything that fits the memory
 region allocated for MCU code and data.
 
-Two consequences:
-
-- **Switching payloads is loading a different binary, not rebuilding the
-  bitstream.** There is one MCU instance, not a per-role FPGA
-  configuration.
+- **Switching payloads is loading a different binary**, not rebuilding
+  the bitstream. One MCU instance, not a per-role FPGA configuration.
 - **The MCU is sized for the most demanding payload**, which is tiny386
-  (~125 KB code, ~12 KB writable state, wants I- and D-cache). Everything
-  else fits beneath that ceiling. This also makes the debug-enabled
-  variant more attractive, since JTAG/GDB serves every payload rather
-  than just this one.
+  (~125 KB code, ~12 KB writable state). Everything else fits beneath
+  that ceiling, and debug capability serves every payload rather than
+  just this one.
 
-## Why an emulated x86 rather than a hardware x86 core
+## Scope: DOS
 
-Two properties a synthesised x86 core does not have (and note this
-compares *payload* against *hard core* — the MCU itself is useful
-regardless of which payload it runs):
+**The target is DOS.** Windows is a long-stretch goal, not a requirement.
 
-1. **It is a functional model.** It runs on a workstation today, is
-   instrumentable, and can be diffed against RTL. A real 386SX/486DX in
-   a socket cannot be simulated at all, which puts it in the critical
-   path for every question it could answer. A soft core in an FPGA can
-   be halted, single-stepped and traced.
-2. **It is small.** The emulator is software; the FPGA cost is only the
-   RISC-V that runs it, leaving the device budget for the chipset,
-   cache/coherency block and instrumentation.
+What that settles:
 
-Measured on **LFE5U-85F**, CABGA381, speed 7, out-of-context, with
-yosys 0.68 + nextpnr-ecp5 (no vendor tools):
+- **x87 stays out.** DOS does not need it. `-DI386_DISABLE_FPU` avoids
+  22.5 KB of `fpu.c` and soft-float entirely.
+- **Upstream's unimplemented features stop mattering.** Hardware task
+  switching, some permission checks and debug registers are missing;
+  DOS uses none of them. They become the stretch goal's problem.
+- **Graphics-mode performance stops mattering.** DOS text mode is
+  80x25x2 = 4,000 bytes at `0xB8000` with small incremental updates, so
+  aperture traffic is low. (A 320x200 graphics fill would be 64,000
+  writes — that case is out of scope.)
+- **Guest RAM is modest.** 640 KB conventional plus a few MB extended;
+  4–16 MB covers it.
 
-| core | LUT4 | % of 85F | Fmax |
-|---|---:|---:|---:|
-| PicoRV32 | 1,782 | 2.1% | 111.30 MHz |
-| VexRiscv Lite | 3,000 | 3.6% | 102.01 MHz |
-| VexRiscv Debug (JTAG+GDB) | 3,595 | 4.3% | 99.06 MHz |
-| ao486 (hardware 486 core) | 37,895 | 45% | 32.87 MHz |
+## Architecture: everything external goes out as 486 bus cycles
 
-The configurations above are **cacheless**; a build carrying the
-emulator wants I- and D-cache, so budget roughly **5–8k LUT4** — still
-around a tenth of what a hardware x86 core costs.
+**Decided.** Accesses that are not to local BRAM-based code/data leave
+the MCU **looking like native 486 local-bus cycles**, through the 486 BIU
+bridge.
 
-## Scope: the CPU core only
+```
+  VexRiscv MCU
+      |
+      |-- local: BRAM code + data ............ stays inside, fast
+      |
+      `-- everything else --> 486 BIU --> [L2/L3 + coherency] --> DRAM
+                                              `--> peripheral decode (RTL)
+```
 
-Only the **i386 emulator** is used. `i386.c` (~6K LOC), `i386ins.def`,
-and optionally `fpu.c` for x87.
+The split is **by memory region**, not by access type. Simpler to
+implement, simpler to reason about, and the emulator does not have to
+classify accesses at all.
 
-The peripherals tiny386 ports from TinyEMU/QEMU — 8259 PIC, 8254 PIT,
-8042, CMOS RTC, VGA, IDE, NE2000, DMA, PC speaker, Adlib, SB16 — are
-**not compiled in**.
+### Why
 
-Every peripheral lives in **FPGA logic**, not software. Some are the real
-chipset implementation; others are FPGA modules standing in for a period
+Observability is the entire reason for a soft CPU. Routing external
+access through the BIU means **the chipset, the cache/coherency block and
+the BIU itself are all exercised in Verilator**, with every signal
+visible. Bypassing it to save cycles would trade away the thing that
+cannot be recovered on hardware for a thing that has been declared not to
+matter.
+
+It also guarantees the test payload and the emulator payload exercise the
+*same* path — otherwise the tester validates something the emulator never
+uses.
+
+The topology is faithful: a real 486 talks to L2 over its local bus, and
+L2 talks to DRAM. Guest RAM going out as bus cycles is what a 486 does,
+and the cache is supposed to absorb them.
+
+### Implication: the guest region should be uncached in the MCU
+
+Following from the above, and worth stating explicitly. If the VexRiscv
+D-caches guest memory, a second cache layer sits above the chipset's L2 —
+with its own coherency relationship to the coherency block, absorbing
+exactly the traffic the BIU exists to expose. Marking the guest region
+uncached keeps **one cache hierarchy, fully exercised**, and avoids a
+two-cache coherency puzzle.
+
+Knock-on: with MCU code/data in BRAM and guest accesses deliberately
+uncached, **the MCU's own caches matter far less** than the variant
+analysis in PORT-ANALYSIS.md assumed — that recommendation was built on
+"the interpreter runs from DRAM and needs caches." Worth re-measuring
+against the real configuration rather than carrying it forward.
+
+### Accepted cost
+
+Every guest memory access becomes a BIU transaction, including L2 hits,
+which cost the bus handshake. This is a deliberate trade, not an
+oversight.
+
+## BIOS and peripherals
+
+**SeaBIOS or the Bochs BIOS.** Both are written against standard PC
+hardware at the register level — 8259 PIC pair, 8254 PIT, 8042, CMOS/RTC
+at `0x70`/`0x71`, VGA at the usual ports and aperture. Neither is
+parameterised for custom peripherals.
+
+That decides the peripheral specification: **register-compatible period
+devices.** The alternative is forking a BIOS. Compatibility is also what
+a real 386SX/486DX in the socket requires, so building the peripherals
+any other way would mean validating hardware the hard CPU can never use.
+
+Every peripheral lives in **FPGA logic**, not software — some the real
+chipset implementation, others FPGA modules standing in for a period
 device (video, for instance). Either way they are RTL, and the emulator's
-I/O and memory callbacks route outward to them rather than to software
-models.
+`io_*` / `iomem_*` callbacks route outward to them.
 
-This is the main structural difference from the ESP32 port, which brings
-the whole PC with it.
+### Take every emulation shortcut the BIOS offers
 
-## Memory architecture
+**Decided.** Memory size from CMOS rather than probing, skip the memory
+test, fast A20 via port `0x92` rather than the keyboard-controller dance,
+minimal device enumeration.
 
-**Guest memory is FPGA external memory, reached through the L2/L3 cache
-controller and coherency units** — not held inside the emulator's own
-address space.
+Each is both less RTL to write and less simulation time to burn — and
+the second reason is the sharper one. **Simulation is three layers deep:**
+Verilator running VexRiscv running tiny386 running the BIOS. Verilator
+manages a few MHz on a core this size; tiny386 costs on the order of 100
+host instructions per guest instruction; so the guest runs at tens of
+kHz. A POST executing a few million instructions is minutes. A POST that
+memory-tests 4 MB is tens of millions of accesses and becomes half an
+hour or worse. Shortcuts are the difference between an iterable loop and
+an overnight run.
 
-```
-tiny386 i386 core  (running on VexRiscv)
-        |
-        |  memory read/write callbacks
-        v
-  L2 / L3 cache controller + coherency units
-        |
-        v
-  FPGA external memory (DRAM)
+**One distinction to keep straight:** universal BIOS shortcuts are free,
+because the real CPU gets them too. Shortcuts *conditional on detecting
+an emulator* are not — tiny386 would take the easy branch and a real
+386SX/486DX would take the other, validating a path the hard CPU never
+uses. Same class of error as bypassing the BIU. Which shortcuts are
+unconditional versus detection-gated is **unverified**.
 
-  I/O port callbacks -> chipset peripheral logic
-  VGA aperture / MMIO -> chipset, through the same coherency path
-```
+## Acceptance criterion
 
-Consequences worth keeping in view:
+**An unmodified stock BIOS completes POST against the FPGA peripherals,
+in Verilator.**
 
-- The emulator does **not** need to hold 640 KB+ of guest RAM locally.
-  Its own footprint is code (~80–150 KB of RV32 text, estimated) plus a
-  few tens of KB of CPU state. That is the single biggest departure from
-  the ESP32 build and what makes the FPGA target comfortable.
-- Guest accesses go through the cache hierarchy, so the **cache is doing
-  real work** and is itself exercised by anything the emulator runs.
-  Cache and coherency bugs surface as guest misbehaviour.
-- **Do not route ordinary guest RAM access directly out as bus cycles.**
-  If every emulated access became a bus transaction (~100–300 ns), at
-  2–4 accesses per instruction the interpreter would sit near 1 µs per
-  instruction and performance would collapse. The cache hierarchy is
-  what makes this viable; only I/O and apertures should reach the
-  peripheral bus.
+Sharper and more testable than "the chipset works", and it exercises the
+BIU, the peripherals, the cache path and the emulator together — a
+stronger signal than any synthetic bus test. Worth freezing as a
+regression.
 
-## OPEN DECISION — settle before any integration work
+## Accepted limitations
 
-**How the emulator reaches the chipset is not decided.** Nothing below
-the CPU-core port should be built against an assumed answer, because the
-answer changes the interfaces, the performance model, and what the
-soft-CPU configuration is able to validate.
-
-### It decomposes into three paths, not one
-
-| path | frequency | status |
-|---|---|---|
-| guest RAM | very high | **decided** — L2/L3 + coherency to external DRAM |
-| MMIO (VGA aperture) | high in graphics code | **OPEN** |
-| port I/O | low | **OPEN** |
-
-Guest RAM settles itself: on a real 486 system the CPU talks to L2 and
-L2 talks to DRAM, so the soft CPU joining at the **L2 interface** is
-faithful from L2 downward and skips only the 486 bus protocol. Hard CPU
-and soft CPU converge at L2 and share everything beneath it.
-
-### The two candidate shapes for I/O and MMIO
-
-**A — internal fabric.** Callbacks reach chipset peripheral registers
-over an internal bus, bypassing the 486 front end. Fast: a peripheral
-access costs a few cycles.
-
-**B — through the 486 front end ("virtual socket").** Callbacks drive an
-internal adapter that generates 486 local-bus cycles into the same front
-end the physical socket drives. The bus is entirely internal to the FPGA
-— no pins, no level shifters, no timing closure against real silicon.
-Costs roughly 100–300 ns per access.
-
-### The argument for B
-
-The chipset needs a 486 front end **regardless**, because the hard-CPU
-configuration requires it. Given that it exists either way:
-
-- **One path to validate instead of two.** Under A the soft CPU
-  exercises a path the hard CPU never uses, and *cannot* exercise the
-  path the hard CPU does — the opposite of what a validation vehicle
-  should do.
-- **No duplicate peripheral interfaces.** Peripherals get one bus-facing
-  side rather than an internal one and a bus one.
-
-The resulting shape: **one 486 front end, two possible masters** — the
-physical socket or the internal soft-CPU adapter, selected by
-configuration.
-
-Port I/O is rare enough that the per-access cost is noise.
-
-### The part that is genuinely undecided: the VGA aperture
-
-This is the one high-traffic case, and it is a real trade rather than an
-oversight:
-
-- Through the front end: a 320x200 full-screen fill is 64,000 byte
-  writes at ~200 ns ≈ **13 ms**. Tolerable. 640x480 or heavy blitting is
-  proportionally worse, and this is where "slow" starts to be felt.
-- Framebuffer in DRAM behind the cache, video module reading from there:
-  writes run at cached-DRAM speed and the video module DMAs. Much
-  faster — but the aperture then exercises **no** bus front end,
-  reintroducing a second path for the highest-traffic peripheral.
-
-Which is right depends on what the soft-CPU configuration is *for*:
-primarily validation (route through the bus) or primarily a usable
-no-hard-CPU product (DRAM-backed framebuffer).
-
-### Also unresolved
-
-**Adapter fidelity: cycle-accurate 486 timing, or protocol-correct
-only?** Cycle-accurate allows validating timing-sensitive chipset paths;
-protocol-correct is far easier and sufficient for functional validation.
-A software emulator cannot produce authentic timing regardless, which
-limits what fidelity buys here.
-
-### Why this blocks integration
-
-The `CPU_CB` callback implementations, the adapter (if any), the chipset
-peripheral interfaces, and the performance model all follow from this
-choice. Porting the CPU core itself is unaffected and can proceed — it
-is the same code either way.
-
-## Performance expectation
-
-Rough, with wide error bars. Upstream boots Windows 9x on an ESP32-S3 at
-240 MHz. VexRiscv at ~100 MHz with a simpler pipeline should land
-**2.5–4× slower**, i.e. very roughly a **1–4 MHz equivalent 386**. Treat
-that as an order-of-magnitude figure; it could be off by 2× either way,
-and it depends heavily on cache behaviour on the path above.
-
-That is slow for interactive use and entirely adequate for the intended
-jobs: exercising the chipset, validating the cache and coherency block,
-and providing a reference the RTL can be diffed against.
+- **Timing-dependent paths are not validated in simulation.** A software
+  emulator will not reproduce 486 bus timing, so wait states, refresh
+  interaction and tight I/O recovery cannot be proven this way. **This
+  gap is accepted**; close it on hardware later.
+- **Interrupt latency** will be poor if the interpreter polls. Hardware
+  peripherals raising IRQs may need a different mechanism than the
+  software-model path assumes.
+- **Upstream feature gaps** — hardware task switching, some permission
+  checks, debug registers. Out of scope for DOS; in scope for Windows.
 
 ## Possible second role (not a requirement)
 
 Upstream tiny386 runs on a workstation, so the same emulator could serve
-as a host-side functional model — developing BIOS and test code before
-hardware exists, or diffing bus transactions against the RTL.
+as a host-side functional model. Whether the host build is kept working
+is **an open question, not a decided constraint** — keeping it costs
+`#ifdef`s at each divergence and buys the model role. The port changes
+made so far are conditional, so both remain possible.
 
-Whether the host build is kept working is **an open question, not a
-decided constraint.** Keeping it costs `#ifdef`s at each divergence and
-buys the model role; abandoning it allows simpler bare-metal source. The
-port changes made so far are conditional, so both remain possible.
+## Open questions
 
-## Port analysis
-
-Measured footprint, the exact changes required, and the first milestone
-are in **[PORT-ANALYSIS.md](PORT-ANALYSIS.md)**. Summary: the integer
-core is ~140 KB of text and ~13 KB of working state, has zero floating
-point, and its entire libc surface is 14 `assert`, 2 `malloc`,
-2 `fprintf` and 2 `abort`.
-
-## Known risks
-
-- **Interrupt latency** will be poor if the interpreter polls. Hardware
-  peripherals raising IRQs may need a different mechanism than the
-  software-model path assumes.
-- **No cycle-accurate bus timing.** A software emulator will not
-  reproduce 486 bus timing. For validation this is partly a feature —
-  transactions are issued deliberately rather than as a side effect of
-  prefetch — but timing-sensitive chipset paths cannot be tested this
-  way.
-- **Unimplemented features.** Upstream notes hardware task switching,
-  some permission checks, and debug registers are missing. Fine for the
-  intended use; worth knowing before assuming full 386 semantics.
+- **Which BIOS.** SeaBIOS assumes some 486+ behaviour in places; the
+  older Bochs legacy BIOS targets earlier hardware more directly.
+  Unverified which suits a 386-class target better. tiny386 already ships
+  with SeaBIOS, whose expectations are known-good against tiny386's
+  *software* peripherals — a useful reference when the RTL ones
+  misbehave.
+- **Which BIOS shortcuts are emulator-conditional** rather than
+  unconditional (see above).
+- **Storage / boot device.** DOS needs one. Not yet addressed.
+- **IRQ delivery** from hardware peripherals into the interpreter —
+  polled in the step loop, or a RISC-V interrupt.
+- **Host core variant**, re-evaluated for BRAM-resident code and an
+  uncached guest region.
+- **Guest RAM size and address-map placement**, and how MMIO regions are
+  carved out of it.

@@ -73,11 +73,10 @@ Guest RAM is external DRAM and outside this budget — the single biggest
 departure from the ESP32 build, which carries the whole PC.
 
 At ~125 KB the code is ~27% of the ECP5-85F's block RAM (3.7 Mbit ≈
-460 KB), so it *could* live on-chip, but **running from external DRAM
-behind an I-cache is the better use of the device** given BRAM and
-distributed RAM are wanted for cache ways. The writable working set
-(~12 KB + stack) is small enough to keep in BRAM or TCM if the hot state
-should be fast.
+460 KB), and **the architecture decision is that MCU code and data live
+in local BRAM** — see FPGA-SOFTCORE.md. Everything outside that region
+leaves the MCU as 486 bus cycles. ~137 KB total (code + writable state)
+leaves roughly 70% of BRAM for L2 tags/data, video buffers and FIFOs.
 
 Note `rv32imc` is 25% smaller than `rv32im` — but see the variant
 section: compressed instructions cost 40% of the clock on ECP5, so
@@ -174,6 +173,15 @@ Smaller code improves I-cache hit rate, but it would have to be worth
 **68%** to break even. For a throughput-bound interpreter it will not be.
 
 ### Recommendation
+
+> **Superseded premise.** The comparison below assumed the interpreter
+> runs from external DRAM and therefore needs caches. The architecture
+> decision is now BRAM-resident MCU code/data with an *uncached* guest
+> region reached over the 486 BIU, which weakens that reasoning
+> considerably. The measurements stand; the recommendation should be
+> re-derived against the real configuration. `Lite` and `Min` remain out
+> on mul/div grounds regardless.
+
 
 **`Full`** (3,908 LUT4, 96.55 MHz), or **`FullDebug`** (3,952 LUT4,
 84.79 MHz) for JTAG/GDB — 44 more LUT4 but 12% less clock.
