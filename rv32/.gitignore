@@ -1,0 +1,4 @@
+# Build artifacts. test386.h IS committed (generated, but tracked so
+# nasm is only needed to change the payload).
+milestone.elf
+test386.bin
