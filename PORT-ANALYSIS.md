@@ -205,19 +205,48 @@ Ruled out:
   software (the 12 KB table above). Costs 30% more LUT4 and 23% of the
   clock versus `Full`.
 
-## First milestone
+## First milestone — REACHED
 
-Cross-compile for bare-metal RV32 and run under `qemu-riscv32`, stepping
-hand-assembled x86 instructions out of a fake `phys_mem` array with
-printing `CPU_CB` stubs.
+**The i386 core executes correctly on bare-metal RV32.** Full vertical
+slice — cross-compile, link, run, verify — with no FPGA and no hardware.
+Reproduce with `make -C rv32 run`.
 
-A complete vertical slice — build, run, verify — with no FPGA and no
-hardware, answering the three open questions: does it compile clean for
-RV32, what is the real text size, and does it execute correctly when
-built that way.
+    tiny386 on RV32 -- milestone test
+    phys_mem = 1048576 bytes, payload 59 bytes @ 0x1000
 
-Toolchain: `gcc-riscv64-unknown-elf` (Debian 12.2.0). `qemu-riscv32` is
-already present.
+       OUT32 port=0x080 <= 0x00000019     25 = 5^2
+       OUT32 port=0x080 <= 0x00000010     16 = 4^2
+       OUT32 port=0x080 <= 0x00000009      9 = 3^2
+       OUT32 port=0x080 <= 0x00000004      4 = 2^2
+       OUT32 port=0x080 <= 0x00000001      1 = 1^2
+       OUT32 port=0x080 <= 0xa5a5a5a5     memory round-trip
+       OUT32 port=0x080 <= 0x00000042     byte store + movzx
+       OUT32 port=0x080 <= 0xdeadbeef     end marker
+    RESULT: PASS
+
+Every emitted value is **computed**, so none of it can come from
+anywhere but real execution — a constant would prove nothing. The squares
+require `IMUL` and a decrementing `ECX` via `LOOP`; `0xa5a5a5a5` survives
+a store, an `XOR EAX,EAX` clobber and a reload through `phys_mem`; `0x42`
+exercises byte-width access and `MOVZX`.
+
+Toolchain: `gcc-riscv64-unknown-elf` 12.2.0 + `picolibc` (Debian),
+`qemu-system-riscv32`, `--crt0=semihost`. picolibc's semihosting crt0
+supplies `stdout`/`stderr`/`_exit`, so printf debugging works under qemu
+for free.
+
+The `CPU_CB` stubs **print only** — nothing is routed anywhere, which
+keeps the milestone clear of the undefined memory and peripheral paths.
+
+### Not covered by this milestone
+
+- **`rdcycle` is unexercised.** The `RDTSC` path is compiled in but the
+  payload never executes `RDTSC`. qemu implements the CSR; a VexRiscv
+  build might not (it is optional in RISC-V).
+- **Interrupts are untouched.** `pic_read_irq` returns -1 and nothing
+  raises an IRQ.
+- **`rv32imc` is not the build default.** `rv32im` is, because compressed
+  instructions cost ~40% of Fmax on ECP5 — see the variant section.
 
 ## Open questions
 
