@@ -176,9 +176,13 @@ Smaller code improves I-cache hit rate, but it would have to be worth
 ### Recommendation
 
 **`Full`** (3,908 LUT4, 96.55 MHz), or **`FullDebug`** (3,952 LUT4,
-84.79 MHz) for JTAG/GDB during bring-up — 44 more LUT4 but 12% less
-clock. They are bitstream-level alternatives, so the debugger need not
-ship in the production configuration.
+84.79 MHz) for JTAG/GDB — 44 more LUT4 but 12% less clock.
+
+Note the core is a general-purpose MCU running **payloads**, of which
+tiny386 is one; it is sized for the most demanding payload, and the
+debug capability serves all of them rather than just the emulator, which
+makes `FullDebug` easier to justify than it would be for a single-purpose
+core.
 
 Ruled out:
 

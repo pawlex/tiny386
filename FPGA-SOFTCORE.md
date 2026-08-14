@@ -16,17 +16,41 @@ application.
 **A small x86 core that runs both in simulation and on hardware, slowly.**
 
 tiny386's i386 emulator is retargeted to run on a **VexRiscv** soft core
-inside a **Lattice ECP5** FPGA, as the CPU for a PC motherboard project
-whose primary sockets take a real 386SX or 486DX. The soft-CPU path
-exists for the configuration where no hard CPU is fitted, and for board
-bring-up and chipset validation.
+inside a **Lattice ECP5** FPGA, part of a PC motherboard project whose
+primary sockets take a real 386SX or 486DX. The soft-CPU path exists for
+the configuration where no hard CPU is fitted, and for board bring-up and
+chipset validation.
 
 Speed is explicitly not a goal. Correct, observable, debuggable
 behaviour is.
 
-## Why this instead of a hardware x86 core
+### tiny386 is a payload, not the architecture
 
-Two properties a synthesised x86 core does not have:
+The FPGA carries a general-purpose **MCU core (VexRiscv)**. tiny386 is
+**one payload** it can run — not a fixed role, and **not** a replacement
+for the 486 BIU interface bridge, which is independent RTL that payloads
+talk *through* rather than implement.
+
+Other payloads are equally valid on the same core: chipset test and
+validation code, diagnostics, bootloaders, anything that fits the memory
+region allocated for MCU code and data.
+
+Two consequences:
+
+- **Switching payloads is loading a different binary, not rebuilding the
+  bitstream.** There is one MCU instance, not a per-role FPGA
+  configuration.
+- **The MCU is sized for the most demanding payload**, which is tiny386
+  (~125 KB code, ~12 KB writable state, wants I- and D-cache). Everything
+  else fits beneath that ceiling. This also makes the debug-enabled
+  variant more attractive, since JTAG/GDB serves every payload rather
+  than just this one.
+
+## Why an emulated x86 rather than a hardware x86 core
+
+Two properties a synthesised x86 core does not have (and note this
+compares *payload* against *hard core* — the MCU itself is useful
+regardless of which payload it runs):
 
 1. **It is a functional model.** It runs on a workstation today, is
    instrumentable, and can be diffed against RTL. A real 386SX/486DX in
