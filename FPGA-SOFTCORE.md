@@ -4,8 +4,13 @@ Fork-specific notes. Upstream tiny386 is a portable PC emulator; see
 [`README.md`](README.md) for what it is and how to build it normally.
 This document records why *this* fork exists and how it is intended to be
 used. Nothing here changes the emulator's behaviour as a host
-application. Measured footprint and the port itself are in
-[PORT-ANALYSIS.md](PORT-ANALYSIS.md).
+application.
+
+- **[rv32/README.md](rv32/README.md)** — the port itself, its
+  measurements, and the qemu smoke test. Project-neutral; this is what
+  was contributed upstream.
+- **[PORT-ANALYSIS.md](PORT-ANALYSIS.md)** — what the port means for
+  *this* project, and what is still open.
 
 ## What this is for
 
@@ -121,9 +126,9 @@ argument is about where traffic becomes visible.
 
 Knock-on: with MCU code/data in BRAM and guest accesses deliberately
 uncached, **the MCU's own caches matter far less** than the variant
-analysis in PORT-ANALYSIS.md assumed — that recommendation was built on
-"the interpreter runs from external memory and needs caches." Worth
-re-deriving rather than carrying forward.
+analysis in rv32/README.md assumed — that recommendation was built on
+"the interpreter runs from external memory and needs caches." Deferred
+with the memory subsystem; see PORT-ANALYSIS.md.
 
 ### Accepted cost
 
